@@ -1,6 +1,7 @@
 advertools>=0.13
 python-Wappalyzer>=0.3
 googlesearch-python>=1.2
+ddgs>=9.0
 pytrends>=4.9
 beautifulsoup4>=4.12
 requests>=2.31
