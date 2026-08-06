@@ -2,25 +2,22 @@ name: Weekly Competitor Scan
 
 on:
   schedule:
-    - cron: "0 2 * * 0"   # Every Sunday at 02:00 UTC (GitHub IPs are clean, avoids Monday traffic)
-  workflow_dispatch:        # Allow manual trigger from the Actions tab
-
-permissions:
-  contents: write           # Needed to push the updated tracker.db back to the repo
+    - cron: "0 2 * * 0"   # Every Sunday at 2 AM UTC (fresh IP, low traffic)
+  workflow_dispatch:        # Manual trigger from GitHub UI anytime
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout repo (includes data/tracker.db with domain list)
-        uses: actions/checkout@v4
+      # ── 1. Checkout repo (includes data/tracker.db) ──────────────────────
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      # ── 2. Python setup ───────────────────────────────────────────────────
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
@@ -35,50 +32,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Ensure data directory exists
-        run: mkdir -p data
-
-      - name: Run competitor scan (real SERP data — fresh GitHub IP)
+      # ── 3. Run the scan (uses fresh GitHub Actions IP — no rate limits) ──
+      - name: Run competitor scan
         run: python -m collector.main
-        env:
-          PYTHONPATH: .
 
-      - name: Show scan summary
+      # ── 4. Commit updated DB back to repo ─────────────────────────────────
+      # The scan writes real SERP ranks + traffic estimates to data/tracker.db.
+      # We commit it back so the dashboard always shows up-to-date data.
+      - name: Commit updated database
         run: |
-          python3 - <<'EOF'
-          import sqlite3, os
-          db_path = "data/tracker.db"
-          if not os.path.exists(db_path):
-              print("⚠️  No DB found after scan")
-          else:
-              conn = sqlite3.connect(db_path)
-              conn.row_factory = sqlite3.Row
-              domains = conn.execute("SELECT domain_name, display_name FROM domains WHERE is_active=1").fetchall()
-              print(f"✅ Domains tracked: {len(domains)}")
-              for d in domains:
-                  te = conn.execute(
-                      "SELECT COUNT(*), SUM(estimated_monthly_visits) FROM traffic_estimates WHERE domain_id=(SELECT id FROM domains WHERE domain_name=?)",
-                      (d["domain_name"],)
-                  ).fetchone()
-                  kr = conn.execute(
-                      "SELECT COUNT(*) FROM keyword_rankings WHERE domain_id=(SELECT id FROM domains WHERE domain_name=?) AND rank_position IS NOT NULL",
-                      (d["domain_name"],)
-                  ).fetchone()
-                  print(f"  {d['display_name'] or d['domain_name']}: {kr[0]} ranked keywords, {int(te[1] or 0):,} est. visits/mo")
-              conn.close()
-          EOF
-        env:
-          PYTHONPATH: .
-
-      - name: Commit updated database back to repo
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "GitHub Actions"
+          git config user.email "actions@github.com"
           git add data/tracker.db
-          # Only commit if the DB actually changed
-          if git diff --cached --quiet; then
-            echo "No changes to data/tracker.db — nothing to commit."
-          else
-            git commit -m "chore: update scan results $(date -u +'%Y-%m-%d %H:%M UTC')"
-            git push
-          fi
+          git diff --cached --quiet || git commit -m "chore: update scan results $(date -u +'%Y-%m-%d %H:%M UTC')"
+          git push

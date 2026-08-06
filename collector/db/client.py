@@ -15,12 +15,74 @@ def get_active_domains() -> list[dict]:
 
 
 def get_keyword_volumes() -> dict[str, int]:
-    """Return {keyword: monthly_volume} mapping."""
+    """Return {keyword: monthly_volume} for ALL keywords (global pool)."""
     with get_conn() as conn:
         rows = conn.execute(
             "SELECT keyword, monthly_volume FROM keyword_volumes"
         ).fetchall()
     return {row["keyword"]: row["monthly_volume"] for row in rows}
+
+
+def get_domain_keywords(domain_id: str) -> dict[str, int]:
+    """
+    Return {keyword: monthly_volume} for keywords discovered for this specific domain.
+    Returns empty dict if no domain-specific keywords exist yet (triggers discovery).
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT dkm.keyword, COALESCE(kv.monthly_volume, 0) AS monthly_volume
+               FROM domain_keyword_map dkm
+               LEFT JOIN keyword_volumes kv ON kv.keyword = dkm.keyword
+               WHERE dkm.domain_id = ?""",
+            (domain_id,),
+        ).fetchall()
+    return {row["keyword"]: row["monthly_volume"] for row in rows}
+
+
+def upsert_domain_keywords(domain_id: str, keyword_volumes_map: dict[str, int]) -> int:
+    """
+    Save discovered keywords + estimated volumes for a domain.
+
+    1. Inserts/updates rows in keyword_volumes (global pool).
+    2. Inserts rows in domain_keyword_map (domain → keyword mapping).
+
+    Returns the number of new keywords inserted for this domain.
+    """
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    inserted = 0
+
+    with get_conn() as conn:
+        for keyword, volume in keyword_volumes_map.items():
+            # Upsert into global keyword_volumes (don't overwrite higher real volumes)
+            existing = conn.execute(
+                "SELECT monthly_volume FROM keyword_volumes WHERE keyword = ?",
+                (keyword,),
+            ).fetchone()
+
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO keyword_volumes (id, keyword, monthly_volume, competition, updated_at)
+                       VALUES (?, ?, ?, 'MEDIUM', ?)""",
+                    (_uuid.uuid4().hex, keyword, volume, now),
+                )
+            # Don't overwrite a higher real volume with a pytrends estimate
+
+            # Insert into domain_keyword_map (ignore duplicates)
+            try:
+                conn.execute(
+                    """INSERT OR IGNORE INTO domain_keyword_map (id, domain_id, keyword)
+                       VALUES (?, ?, ?)""",
+                    (_uuid.uuid4().hex, domain_id, keyword),
+                )
+                changes = conn.execute("SELECT changes()").fetchone()[0]
+                inserted += changes
+            except Exception:
+                pass
+
+    return inserted
 
 
 def upsert_tech_profile(domain_id: str, detected_tech: list, scan_status: str = "success") -> None:

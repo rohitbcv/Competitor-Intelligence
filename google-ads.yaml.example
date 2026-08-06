@@ -1,0 +1,16 @@
+# Google Ads API credentials — copy this file to google-ads.yaml and fill in your values.
+# Setup guide: see collector/modules/keyword_volume_fetcher.py
+#
+# How to get each value:
+#   developer_token    → https://ads.google.com/aw/apicenter  (requires Basic Access approval)
+#   client_id          → https://console.cloud.google.com → Credentials → OAuth 2.0 Client IDs
+#   client_secret      → same as above
+#   refresh_token      → run:  python collector/modules/keyword_volume_fetcher.py --auth
+#   login_customer_id  → your Google Ads account ID (format: 123-456-7890, digits only here)
+
+developer_token: YOUR_DEVELOPER_TOKEN
+client_id: YOUR_CLIENT_ID.apps.googleusercontent.com
+client_secret: YOUR_CLIENT_SECRET
+refresh_token: YOUR_REFRESH_TOKEN
+login_customer_id: YOUR_CUSTOMER_ID
+use_proto_plus: True
