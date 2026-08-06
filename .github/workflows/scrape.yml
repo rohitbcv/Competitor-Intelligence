@@ -9,6 +9,8 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write   # allows the job to commit and push data/tracker.db
 
     steps:
       # ── 1. Checkout repo (includes data/tracker.db) ──────────────────────
