@@ -1,4 +1,5 @@
 .env
+google-ads.yaml
 __pycache__/
 *.pyc
 *.pyo
@@ -11,7 +12,3 @@ node_modules/
 *.egg-info/
 dist/
 build/
-graphify-out/
-
-# Track the SQLite DB so GitHub Actions can read domains and write scan results back
-# data/tracker.db is intentionally NOT ignored
