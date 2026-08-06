@@ -36,9 +36,11 @@ jobs:
       - name: Run competitor scan
         run: python -m collector.main
         env:
-          # Comma-separated list of domains to scan.
-          # Leave empty to scan all active domains.
+          # Comma-separated list of domains to scan. Leave empty for all.
           SCAN_DOMAINS: ${{ vars.SCAN_DOMAINS }}
+          # Google Custom Search JSON API — used for reliable SERP rank checking
+          GOOGLE_CSE_API_KEY: ${{ secrets.GOOGLE_CSE_API_KEY }}
+          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
 
       - name: Commit updated database
         run: |
