@@ -2,23 +2,22 @@ name: Weekly Competitor Scan
 
 on:
   schedule:
-    - cron: "0 2 * * 0"   # Every Sunday at 2 AM UTC (fresh IP, low traffic)
-  workflow_dispatch:        # Manual trigger from GitHub UI anytime
+    - cron: "0 2 * * 0"   # Every Sunday at 2 AM UTC
+  workflow_dispatch:        # Manual trigger from GitHub UI
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write 
+      contents: write       # allows committing data/tracker.db back to repo
 
     steps:
-      # ── 1. Checkout repo (includes data/tracker.db) ──────────────────────
       - uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main         # always checkout the latest main
 
-      # ── 2. Python setup ───────────────────────────────────────────────────
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -34,17 +33,18 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 3. Run the scan (uses fresh GitHub Actions IP — no rate limits) ──
       - name: Run competitor scan
         run: python -m collector.main
+        env:
+          # Comma-separated list of domains to scan.
+          # Leave empty to scan all active domains.
+          SCAN_DOMAINS: ${{ vars.SCAN_DOMAINS }}
 
-      # ── 4. Commit updated DB back to repo ─────────────────────────────────
-      # The scan writes real SERP ranks + traffic estimates to data/tracker.db.
-      # We commit it back so the dashboard always shows up-to-date data.
       - name: Commit updated database
         run: |
           git config user.name  "GitHub Actions"
           git config user.email "actions@github.com"
+          git pull --rebase origin main
           git add data/tracker.db
           git diff --cached --quiet || git commit -m "chore: update scan results $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push
+          git push origin main
