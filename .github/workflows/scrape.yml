@@ -2,21 +2,17 @@ name: Weekly Competitor Scan
 
 on:
   schedule:
-    - cron: "0 2 * * 0"   # Every Sunday at 2 AM UTC
-  workflow_dispatch:        # Manual trigger from GitHub UI
+    - cron: "0 2 * * 0"  # Every Sunday at 02:00 UTC (low-traffic window)
+  workflow_dispatch:       # Manual trigger — useful for testing
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write       # allows committing data/tracker.db back to repo
+    # SERP with 10–20s delays across 57 keywords × 3 domains ≈ 60–90 min
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          ref: main         # always checkout the latest main
 
       - uses: actions/setup-python@v5
         with:
@@ -33,27 +29,35 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Restore the SQLite database from the previous scan so historical data
+      # accumulates. On the very first run no cache exists — that's fine,
+      # setup_schema.py will create a fresh DB below.
+      - name: Restore database from cache
+        uses: actions/cache@v4
+        with:
+          path: data/tracker.db
+          key: tracker-db-${{ github.run_id }}
+          restore-keys: |
+            tracker-db-
+
+      # Initialise the DB (creates tables + seeds domains/keywords if missing).
+      # Skips rows that already exist, so safe to run on every scan.
+      - name: Initialise database
+        run: python3 setup_schema.py
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+
       - name: Run competitor scan
         run: python -m collector.main
         env:
-          # Comma-separated list of domains to scan. Leave empty for all.
-          SCAN_DOMAINS: ${{ vars.SCAN_DOMAINS }}
-          # Google Custom Search JSON API — used for reliable SERP rank checking
-          GOOGLE_CSE_API_KEY: ${{ secrets.GOOGLE_CSE_API_KEY }}
-          GOOGLE_CSE_ID: ${{ secrets.GOOGLE_CSE_ID }}
+          NEXT_PUBLIC_API_URL: http://localhost:8000
 
-      - name: Commit updated database
-        run: |
-          git config user.name  "GitHub Actions"
-          git config user.email "actions@github.com"
-          # Save the updated DB before wiping the working tree
-          cp data/tracker.db /tmp/tracker.db
-          # Hard-reset to remote so working tree is perfectly clean
-          git fetch origin main
-          git reset --hard FETCH_HEAD
-          # Restore the fresh scan results
-          cp /tmp/tracker.db data/tracker.db
-          git add data/tracker.db
-          git diff --cached --quiet && echo "No DB changes to commit" || \
-            git commit -m "chore: update scan results $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git push origin main
+      # Upload the updated DB as a downloadable artifact (90-day retention).
+      # This gives you a point-in-time snapshot of every weekly scan.
+      - name: Upload database snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracker-db-${{ github.run_number }}
+          path: data/tracker.db
+          retention-days: 90

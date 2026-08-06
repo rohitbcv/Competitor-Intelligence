@@ -1,145 +1,131 @@
-"""Module C: SERP Rank Checker.
-
-Primary:  DuckDuckGo Search via `ddgs` library (free, no API key, no quota).
-Fallback: googlesearch-python (when ddgs is unavailable).
-
-DuckDuckGo returns real organic web rankings and is not subject to IP blocks
-or API quotas, making it reliable both locally and on GitHub Actions.
-"""
+"""Module C: SERP Rank Checker — googlesearch-python with mandatory rate limiting."""
 
 import time
 import random
 import logging
-
-try:
-    from ddgs import DDGS
-    _DDGS_AVAILABLE = True
-except ImportError:
-    _DDGS_AVAILABLE = False
-
-try:
-    from googlesearch import search as _gs_search_fn
-    _GS_AVAILABLE = True
-except ImportError:
-    _GS_AVAILABLE = False
+from datetime import datetime, timezone
+from googlesearch import search
 
 logger = logging.getLogger(__name__)
 
-MAX_RESULTS = 30           # Top-30 positions checked per keyword
+MAX_RESULTS = 100
 MAX_KEYWORDS_PER_CYCLE = 200
+
+# Between-query pause (seconds). Randomised to mimic human browsing cadence.
+# Lower bound 10s prevents Google's per-minute threshold (≈6 req/min).
+# Upper bound 20s adds jitter so timing patterns are not machine-regular.
+INTER_QUERY_DELAY = (10, 20)
+
+# IP-block probe: two short attempts before declaring the IP unusable.
+# Total probe time ≤ 30s so local runs fail fast.
+PROBE_DELAYS = [10, 20]
+
+# Normal backoffs after a 429 / CAPTCHA on a non-probe keyword.
+# Escalating: 20s → 45s → 90s, then mark as blocked.
+BACKOFF_DELAYS = [20, 45, 90]
+
+# After this many consecutive failures, declare the IP blocked.
 MAX_CONSECUTIVE_FAILURES = 3
 
-# Polite delay between queries (DuckDuckGo doesn't require it but it's good practice)
-QUERY_DELAY = (1.5, 3.0)
 
-
-# ── DuckDuckGo (primary) ─────────────────────────────────────────────────────
-
-def _ddg_search(query: str) -> list[str]:
-    """Search DuckDuckGo and return result URLs (top MAX_RESULTS)."""
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=MAX_RESULTS))
-        return [r.get("href", "") for r in results if r.get("href")]
-    except Exception as exc:
-        logger.warning("DDG search error for '%s': %s", query, exc)
-        return []
-
-
-def _check_ranks_ddg(domain: str, keywords: list[str]) -> list[dict]:
-    logger.info("[C] DuckDuckGo SERP: %s — checking %d keywords", domain, len(keywords))
-    results = []
-    consecutive_failures = 0
-
-    for i, keyword in enumerate(keywords):
-        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            logger.warning("[C] DDG: %d consecutive failures — skipping %d remaining.",
-                           consecutive_failures, len(keywords) - len(results))
-            for kw in keywords[len(results):]:
-                results.append({"keyword": kw, "rank_position": None, "skipped": "blocked"})
-            break
-
-        urls = _ddg_search(keyword)
-
-        if not urls:
-            consecutive_failures += 1
-            results.append({"keyword": keyword, "rank_position": None, "skipped": "no_results"})
-        else:
-            consecutive_failures = 0
-            rank = next(
-                (idx for idx, url in enumerate(urls, 1) if domain.lower() in url.lower()),
-                None,
-            )
-            results.append({"keyword": keyword, "rank_position": rank})
-
-        if i < len(keywords) - 1:
-            time.sleep(random.uniform(*QUERY_DELAY))
-
-    found = sum(1 for r in results if r.get("rank_position") is not None)
-    logger.info("[C] DDG complete for %s: %d/%d ranked", domain, found, len(results))
-    return results
-
-
-# ── googlesearch-python (fallback) ───────────────────────────────────────────
-
-def _check_ranks_fallback(domain: str, keywords: list[str]) -> list[dict]:
-    logger.info("[C] googlesearch fallback: %s — checking %d keywords", domain, len(keywords))
-    results = []
-    consecutive_failures = 0
-
-    for i, keyword in enumerate(keywords):
-        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-            for kw in keywords[len(results):]:
-                results.append({"keyword": kw, "rank_position": None, "skipped": "blocked"})
-            break
-
+def _search_with_backoff(query: str, delays: list[int], num: int = MAX_RESULTS) -> list[str]:
+    """Run a Google search with backoff on 429/CAPTCHA. Returns [] if all attempts fail."""
+    for attempt, delay in enumerate(delays):
         try:
-            urls = list(_gs_search_fn(keyword, num_results=MAX_RESULTS, sleep_interval=0))
-            if not urls:
-                consecutive_failures += 1
-                results.append({"keyword": keyword, "rank_position": None, "skipped": "no_results"})
-            else:
-                consecutive_failures = 0
-                rank = next(
-                    (idx for idx, url in enumerate(urls, 1) if domain.lower() in url.lower()),
-                    None,
-                )
-                results.append({"keyword": keyword, "rank_position": rank})
+            urls = list(search(query, num_results=num, sleep_interval=0))
+            return urls
         except Exception as exc:
-            logger.error("[C] googlesearch error '%s': %s", keyword, exc)
-            results.append({"keyword": keyword, "rank_position": None, "error": str(exc)})
-            consecutive_failures += 1
+            error_str = str(exc).lower()
+            if "429" in error_str or "captcha" in error_str or "rate" in error_str:
+                logger.warning(
+                    "SERP rate limit hit for '%s' (attempt %d/%d). Waiting %ds.",
+                    query, attempt + 1, len(delays), delay
+                )
+                time.sleep(delay)
+            else:
+                raise
+    return []
 
-        if i < len(keywords) - 1:
-            time.sleep(random.uniform(2, 5))
-
-    found = sum(1 for r in results if r.get("rank_position") is not None)
-    logger.info("[C] Fallback complete for %s: %d/%d ranked", domain, found, len(results))
-    return results
-
-
-# ── Public API ───────────────────────────────────────────────────────────────
 
 def check_serp_ranks(domain: str, keywords: list[str]) -> list[dict]:
     """
-    Check SERP rank for each keyword for *domain*.
+    Check SERP rank for each keyword for a given domain.
 
     Returns list of: {"keyword": str, "rank_position": int | None}
 
-    Uses DuckDuckGo (free, no quota, no IP blocks) as primary.
-    Falls back to googlesearch-python if ddgs is unavailable.
+    IP-block detection: probes with the first keyword using short delays.
+    If Google rejects it, all keywords are skipped immediately (≤20s total).
+    This prevents scans from hanging when run from a rate-limited local IP.
+
+    Note: SERP works reliably from GitHub Actions (fresh IP per run).
     """
     if not keywords:
         return []
 
     keywords = keywords[:MAX_KEYWORDS_PER_CYCLE]
+    results = []
+    start_time = time.time()
 
-    if _DDGS_AVAILABLE:
-        return _check_ranks_ddg(domain, keywords)
-    elif _GS_AVAILABLE:
-        logger.warning("[C] ddgs not available — using googlesearch-python fallback")
-        return _check_ranks_fallback(domain, keywords)
-    else:
-        logger.error("[C] No SERP library available. Install ddgs: pip install ddgs")
-        return [{"keyword": kw, "rank_position": None, "skipped": "no_library"}
-                for kw in keywords]
+    # ── IP-block probe: try first keyword with short delays ─────────────────
+    probe_kw = keywords[0]
+    probe_urls = _search_with_backoff(probe_kw, delays=PROBE_DELAYS)
+
+    if not probe_urls:
+        # Google is blocking this IP — skip everything immediately
+        elapsed = time.time() - start_time
+        logger.warning(
+            "SERP IP blocked after %.0fs probe (all %d attempts failed for '%s'). "
+            "Skipping all %d keywords. For reliable SERP data, run from GitHub Actions.",
+            elapsed, len(PROBE_DELAYS), probe_kw, len(keywords)
+        )
+        return [{"keyword": kw, "rank_position": None, "skipped": "ip_blocked"} for kw in keywords]
+
+    # First keyword succeeded — record its result
+    rank = next(
+        (idx for idx, url in enumerate(probe_urls, 1) if domain.lower() in url.lower()),
+        None
+    )
+    results.append({"keyword": probe_kw, "rank_position": rank})
+    consecutive_failures = 0
+
+    # Delay before next query
+    time.sleep(random.uniform(*INTER_QUERY_DELAY))
+
+    # ── Process remaining keywords ───────────────────────────────────────────
+    for keyword in keywords[1:]:
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+            logger.warning(
+                "%d consecutive SERP failures for %s — IP now blocked. Skipping %d remaining keywords.",
+                consecutive_failures, domain, len(keywords) - len(results)
+            )
+            for remaining in keywords[len(results):]:
+                results.append({"keyword": remaining, "rank_position": None, "skipped": "blocked"})
+            break
+
+        try:
+            urls = _search_with_backoff(keyword, delays=BACKOFF_DELAYS)
+            if not urls:
+                results.append({"keyword": keyword, "rank_position": None, "skipped": "blocked"})
+                consecutive_failures += 1
+            else:
+                rank = next(
+                    (idx for idx, url in enumerate(urls, 1) if domain.lower() in url.lower()),
+                    None
+                )
+                results.append({"keyword": keyword, "rank_position": rank})
+                consecutive_failures = 0
+
+        except Exception as exc:
+            logger.error("SERP error for keyword '%s': %s", keyword, exc)
+            results.append({"keyword": keyword, "rank_position": None, "error": str(exc)})
+            consecutive_failures += 1
+
+        time.sleep(random.uniform(*INTER_QUERY_DELAY))
+
+    total_elapsed = time.time() - start_time
+    found = sum(1 for r in results if r.get("rank_position") is not None)
+    logger.info(
+        "SERP complete for %s: %d/%d keywords ranked, %.0fs elapsed",
+        domain, found, len(results), total_elapsed
+    )
+    return results

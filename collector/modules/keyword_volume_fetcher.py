@@ -114,6 +114,81 @@ def fetch_keyword_volumes(keywords: list[str]) -> dict[str, int]:
         return {}
 
 
+def discover_keywords_for_domain(
+    domain: str,
+    max_keywords: int = 200,
+    geo_target_id: str = "1023191",  # New York, United States
+) -> dict[str, int]:
+    """
+    Discover keyword ideas for a competitor domain using Google Ads
+    KeywordPlanIdeaService with a URL seed.
+
+    Returns a dict of { keyword: monthly_volume } sourced directly from
+    Google Keyword Planner — no hardcoding needed.
+
+    Args:
+        domain:         e.g. "marriott.com"
+        max_keywords:   cap on how many ideas to return (default 200)
+        geo_target_id:  Google geo target constant ID (default: New York City)
+
+    Returns empty dict if the Google Ads API is not configured or the call fails.
+    The caller should fall back to a minimal hardcoded seed list in that case.
+    """
+    if not _is_configured():
+        logger.info(
+            "[KV] google-ads.yaml not configured — cannot discover keywords for %s. "
+            "Configure Google Ads API to enable live keyword discovery.",
+            domain,
+        )
+        return {}
+
+    try:
+        from google.ads.googleads.client import GoogleAdsClient
+        from google.ads.googleads.errors import GoogleAdsException
+
+        client = GoogleAdsClient.load_from_storage(str(_YAML_PATH))
+        customer_id = _get_customer_id(client)
+
+        idea_service = client.get_service("KeywordPlanIdeaService")
+        request = client.get_type("GenerateKeywordIdeasRequest")
+        request.customer_id = customer_id
+        request.language = (
+            client.get_service("GoogleAdsService").language_constant_path("1000")  # English
+        )
+        request.include_adult_keywords = False
+        request.keyword_plan_network = (
+            client.enums.KeywordPlanNetworkEnum.GOOGLE_SEARCH
+        )
+        # Geo-target to the client's market (NYC by default)
+        geo_service = client.get_service("GeoTargetConstantService")
+        request.geo_target_constants.append(
+            geo_service.geo_target_constant_path(geo_target_id)
+        )
+
+        # Use the competitor's homepage as the URL seed — the API infers
+        # relevant queries from the page content, same as Keyword Planner UI.
+        request.url_seed.url = f"https://www.{domain}"
+
+        ideas: dict[str, int] = {}
+        response = idea_service.generate_keyword_ideas(request=request)
+        for idea in response:
+            if len(ideas) >= max_keywords:
+                break
+            kw = idea.text.lower().strip()
+            avg = idea.keyword_idea_metrics.avg_monthly_searches
+            ideas[kw] = int(avg)
+
+        logger.info(
+            "[KV] Discovered %d keyword ideas for %s via Google Ads URL seed",
+            len(ideas), domain,
+        )
+        return ideas
+
+    except Exception as exc:
+        logger.error("[KV] Keyword discovery failed for %s: %s", domain, exc)
+        return {}
+
+
 def _get_customer_id(client) -> str:
     """Extract customer_id from the YAML config."""
     content = _YAML_PATH.read_text()

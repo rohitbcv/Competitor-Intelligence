@@ -114,17 +114,6 @@ def init_db():
         error_message   TEXT NOT NULL,
         occurred_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
     );
-
-    -- Maps discovered keywords to a specific domain.
-    -- Populated by keyword_discoverer.py when a new domain is first scanned.
-    -- Allows each domain to have its own relevant keyword set instead of a
-    -- shared global list.
-    CREATE TABLE IF NOT EXISTS domain_keyword_map (
-        id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
-        domain_id       TEXT NOT NULL REFERENCES domains(id),
-        keyword         TEXT NOT NULL,
-        UNIQUE(domain_id, keyword)
-    );
     """
     with get_conn() as conn:
         conn.executescript(schema)

@@ -5,8 +5,8 @@ SOHO Competitor Intelligence Tracker monitors hotel competitor websites and esti
 
 ## Architecture
 ```
-GitHub Actions (cron)          Supabase (PostgreSQL)      Render (FastAPI)      Vercel (Next.js 14)
-Python Collector ──────────▶   Database/Storage  ◀──────  REST API  ◀─────────  Dashboard UI
+GitHub Actions (cron)          SQLite (local file)        FastAPI               Next.js 14
+Python Collector ──────────▶   data/tracker.db   ◀──────  REST API  ◀─────────  Dashboard UI
 ```
 
 ## Repository Structure
@@ -29,7 +29,7 @@ Python Collector ──────────▶   Database/Storage  ◀──
 │   │   ├── brand_interest.py     # Module E: pytrends
 │   │   └── dom_monitor.py        # Module F: BeautifulSoup + MD5
 │   └── db/
-│       └── client.py             # Supabase REST client
+│       └── client.py             # SQLite client (all data stored locally in data/tracker.db)
 ├── api/                          # FastAPI backend
 │   ├── main.py
 │   ├── routers/
@@ -43,7 +43,7 @@ Python Collector ──────────▶   Database/Storage  ◀──
 │   └── models/
 │       └── schemas.py
 ├── schema/
-│   └── schema.sql                # Full DDL — run this on Supabase SQL editor
+│   └── schema.sql                # Full DDL — applied automatically by setup_schema.py
 ├── tests/                        # pytest unit tests
 │   ├── test_traffic_estimator.py
 │   ├── test_sitemap.py
@@ -112,16 +112,16 @@ Every module must return a structured error object — never throw unhandled exc
 
 ## Environment Variables
 ```
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your-service-role-key   # Use service role for collector writes
-NEXT_PUBLIC_API_URL=https://your-api.onrender.com
+NEXT_PUBLIC_API_URL=http://localhost:8000   # or your deployed API URL
 ```
+
+All collected data is stored locally in `data/tracker.db` (SQLite). No external database credentials needed.
 
 ## Deployment
 | Service | Platform | Tier | Cost |
 |---|---|---|---|
 | Collector | GitHub Actions | Free (2,000 min/mo) | $0 |
-| Database | Supabase | Free (500MB) | $0 |
+| Database | SQLite file (`data/tracker.db`) | Local | $0 |
 | API | Render | Free | $0 |
 | Frontend | Vercel | Free | $0 |
 
@@ -129,7 +129,8 @@ NEXT_PUBLIC_API_URL=https://your-api.onrender.com
 ```bash
 # Collector
 pip install -r requirements.txt
-cp .env.example .env  # fill in Supabase creds
+cp .env.example .env
+python3.10 setup_schema.py    # creates DB + seeds keywords/domains
 python collector/main.py
 
 # API

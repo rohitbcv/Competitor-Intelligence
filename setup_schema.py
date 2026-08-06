@@ -1,231 +1,240 @@
 """
-Local SQLite Setup Script — creates the database and seeds starter data.
+Local SQLite Setup Script — creates the database and populates starter data.
 
-Run once before starting the app for the first time:
+Keyword discovery priority (highest → lowest):
+  1. Google Ads KeywordPlanIdeaService (URL seed per domain) — real volumes, live ideas
+  2. Hardcoded fallback seed list                            — zero volumes, bootstraps
+     the keyword_volumes table so the app starts; volumes are filled on the
+     first collector scan once the Google Ads API is configured.
+
+Run once before starting the app:
     python3.10 setup_schema.py
 
 The database is saved to:  data/tracker.db
 """
 
-import json
+import logging
 import uuid
-import hashlib
 from pathlib import Path
 from db.sqlite import get_conn, init_db, DB_PATH
 
-SAMPLE_KEYWORDS = [
-    # Broad / head
-    {"keyword": "hotels in new york city", "monthly_volume": 74000, "competition": "HIGH"},
-    {"keyword": "new york hotels", "monthly_volume": 110000, "competition": "HIGH"},
-    {"keyword": "best hotels in nyc", "monthly_volume": 22200, "competition": "HIGH"},
-    {"keyword": "hotels near times square", "monthly_volume": 40500, "competition": "HIGH"},
-    {"keyword": "manhattan hotels", "monthly_volume": 33100, "competition": "HIGH"},
-    {"keyword": "nyc hotel", "monthly_volume": 27100, "competition": "HIGH"},
-    {"keyword": "hotels in manhattan", "monthly_volume": 49500, "competition": "HIGH"},
-    {"keyword": "new york city hotels", "monthly_volume": 60500, "competition": "HIGH"},
-    {"keyword": "hotel in new york", "monthly_volume": 33100, "competition": "HIGH"},
-    {"keyword": "hotels nyc", "monthly_volume": 45400, "competition": "HIGH"},
-    # Location-specific
-    {"keyword": "hotels near central park nyc", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "hotels near rockefeller center", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "hotels near penn station nyc", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "hotels near grand central station", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "midtown manhattan hotels", "monthly_volume": 22200, "competition": "HIGH"},
-    {"keyword": "upper east side hotels nyc", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "upper west side hotels nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "downtown manhattan hotels", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "hotels near 5th avenue nyc", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "hotels near empire state building", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "hotels near nyc airport", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "hotels near jfk airport", "monthly_volume": 12100, "competition": "HIGH"},
-    {"keyword": "hotels near laguardia airport", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "hotels near union square nyc", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "hotels in brooklyn nyc", "monthly_volume": 6600, "competition": "MEDIUM"},
-    {"keyword": "hotels near broadway nyc", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "hotels near madison square garden", "monthly_volume": 12100, "competition": "HIGH"},
-    {"keyword": "chelsea hotels nyc", "monthly_volume": 5400, "competition": "MEDIUM"},
-    {"keyword": "tribeca hotels nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "soho hotels new york", "monthly_volume": 6600, "competition": "MEDIUM"},
-    # Segment / class
-    {"keyword": "luxury hotels new york", "monthly_volume": 18100, "competition": "HIGH"},
-    {"keyword": "5 star hotels nyc", "monthly_volume": 12100, "competition": "HIGH"},
-    {"keyword": "4 star hotels nyc", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "cheap hotels nyc", "monthly_volume": 27100, "competition": "HIGH"},
-    {"keyword": "budget hotels new york city", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "affordable hotels nyc", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "boutique hotels new york", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "family hotels new york city", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "pet friendly hotels nyc", "monthly_volume": 5400, "competition": "MEDIUM"},
-    {"keyword": "romantic hotels nyc", "monthly_volume": 6600, "competition": "MEDIUM"},
-    {"keyword": "business hotels new york", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "extended stay hotels nyc", "monthly_volume": 5400, "competition": "MEDIUM"},
-    # Transactional
-    {"keyword": "hotel deals new york", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "cheap hotels nyc tonight", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "last minute hotels nyc", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "hotel rooms new york", "monthly_volume": 14800, "competition": "HIGH"},
-    {"keyword": "book hotel new york", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "new york hotel reservations", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "nyc hotel deals this weekend", "monthly_volume": 3600, "competition": "HIGH"},
-    {"keyword": "hotels new york cheap rates", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "discount hotels new york city", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "hotel packages new york", "monthly_volume": 4400, "competition": "MEDIUM"},
-    # Amenity long-tail
-    {"keyword": "hotels with pool new york city", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "hotels with gym nyc", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "hotels with spa nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "hotels with rooftop bar nyc", "monthly_volume": 5400, "competition": "MEDIUM"},
-    {"keyword": "hotels with kitchenette nyc", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "hotels with free breakfast nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "hotels with parking nyc", "monthly_volume": 6600, "competition": "MEDIUM"},
-    {"keyword": "hotels with city view nyc", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "all inclusive hotels nyc", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "hotels with balcony nyc", "monthly_volume": 2400, "competition": "LOW"},
-    # Informational
-    {"keyword": "best luxury hotels new york 2025", "monthly_volume": 5400, "competition": "MEDIUM"},
-    {"keyword": "best midtown hotels nyc", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "top rated hotels new york city", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "best hotels near times square", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "best value hotels nyc", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "most popular hotels in nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "new york hotel reviews", "monthly_volume": 5400, "competition": "MEDIUM"},
-    {"keyword": "new york hotel comparison", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "hotels worth it nyc", "monthly_volume": 1900, "competition": "LOW"},
-    # Marriott branded
-    {"keyword": "marriott new york", "monthly_volume": 18100, "competition": "HIGH"},
-    {"keyword": "marriott times square", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "marriott hotels nyc", "monthly_volume": 12100, "competition": "HIGH"},
-    {"keyword": "marriott marquis nyc", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "marriott midtown new york", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "marriott downtown nyc", "monthly_volume": 3600, "competition": "HIGH"},
-    {"keyword": "marriott bonvoy new york hotels", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "marriott broadway new york", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "ny marriott east side", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "marriott hotel new york city reservations", "monthly_volume": 2400, "competition": "HIGH"},
-    {"keyword": "marriott points redemption nyc", "monthly_volume": 1600, "competition": "MEDIUM"},
-    {"keyword": "westin new york grand central", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "sheraton new york times square", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "w hotel new york", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "courtyard marriott nyc", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "marriott rewards new york", "monthly_volume": 2400, "competition": "MEDIUM"},
-    # Hilton branded
-    {"keyword": "hilton new york", "monthly_volume": 14800, "competition": "HIGH"},
-    {"keyword": "hilton midtown nyc", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "hilton hotels new york city", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "hilton times square", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "hilton hotel manhattan", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "hilton new york midtown", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "waldorf astoria new york", "monthly_volume": 12100, "competition": "HIGH"},
-    {"keyword": "doubletree new york", "monthly_volume": 6600, "competition": "MEDIUM"},
-    {"keyword": "hampton inn new york city", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "hilton garden inn nyc", "monthly_volume": 6600, "competition": "MEDIUM"},
-    {"keyword": "hilton honors nyc hotels", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "curio collection new york", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "embassy suites new york city", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "hilton downtown manhattan", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "hilton points nyc redemption", "monthly_volume": 1600, "competition": "LOW"},
-    # Hyatt branded
-    {"keyword": "hyatt new york", "monthly_volume": 9900, "competition": "HIGH"},
-    {"keyword": "park hyatt new york", "monthly_volume": 5400, "competition": "MEDIUM"},
-    {"keyword": "grand hyatt nyc", "monthly_volume": 6600, "competition": "MEDIUM"},
-    {"keyword": "hyatt times square nyc", "monthly_volume": 3600, "competition": "HIGH"},
-    {"keyword": "hyatt midtown manhattan", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "hyatt place new york", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "andaz 5th avenue new york", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "thompson central park new york", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "alila manhattan hotel", "monthly_volume": 1600, "competition": "LOW"},
-    {"keyword": "world of hyatt new york", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "hyatt regency new york", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "hyatt centric times square", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "hyatt grand central new york", "monthly_volume": 2900, "competition": "MEDIUM"},
-    # IHG branded
-    {"keyword": "holiday inn new york", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "holiday inn times square", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "intercontinental new york", "monthly_volume": 6600, "competition": "HIGH"},
-    {"keyword": "intercontinental times square", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "kimpton new york", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "kimpton hotel manhattan", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "crowne plaza times square", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "crowne plaza new york", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "staybridge suites times square", "monthly_volume": 1900, "competition": "MEDIUM"},
-    {"keyword": "candlewood suites new york", "monthly_volume": 1300, "competition": "LOW"},
-    {"keyword": "hotel indigo lower east side", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "voco times square south", "monthly_volume": 1600, "competition": "LOW"},
-    {"keyword": "ihg rewards new york hotels", "monthly_volume": 1900, "competition": "MEDIUM"},
-    # Events & occasions
-    {"keyword": "hotels nyc new years eve", "monthly_volume": 8100, "competition": "HIGH"},
-    {"keyword": "hotels near javits center nyc", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "hotels near yankee stadium", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "hotels near msg new york", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "wedding hotels new york city", "monthly_volume": 4400, "competition": "MEDIUM"},
-    {"keyword": "honeymoon hotels nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "hotels with meeting rooms nyc", "monthly_volume": 2900, "competition": "MEDIUM"},
-    {"keyword": "conference hotels new york city", "monthly_volume": 3600, "competition": "MEDIUM"},
-    # Seasonal
-    {"keyword": "hotels nyc christmas", "monthly_volume": 5400, "competition": "HIGH"},
-    {"keyword": "hotels nyc thanksgiving", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "spring break hotels nyc", "monthly_volume": 3600, "competition": "MEDIUM"},
-    {"keyword": "summer hotels deals nyc", "monthly_volume": 4400, "competition": "HIGH"},
-    {"keyword": "hotels nyc labor day weekend", "monthly_volume": 2900, "competition": "HIGH"},
-    # Comparison
-    {"keyword": "marriott vs hilton new york", "monthly_volume": 1900, "competition": "LOW"},
-    {"keyword": "direct booking hotel nyc", "monthly_volume": 2400, "competition": "MEDIUM"},
-    {"keyword": "book direct marriott new york", "monthly_volume": 1600, "competition": "MEDIUM"},
-    {"keyword": "marriott best rate guarantee nyc", "monthly_volume": 1300, "competition": "LOW"},
-    {"keyword": "hilton vs hyatt new york", "monthly_volume": 1300, "competition": "LOW"},
-]
+logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
+logger = logging.getLogger(__name__)
 
-SAMPLE_DOMAINS = [
+
+# ── Competitor domains ────────────────────────────────────────────────────────
+# Each entry drives a URL-seed keyword discovery call to Google Ads.
+# Add / remove domains here to change what the tracker monitors.
+DOMAINS = [
     {"domain_name": "marriott.com", "display_name": "Marriott Hotels"},
     {"domain_name": "hilton.com",   "display_name": "Hilton Hotels"},
     {"domain_name": "hyatt.com",    "display_name": "Hyatt Hotels"},
     {"domain_name": "ihg.com",      "display_name": "IHG Hotels & Resorts"},
 ]
 
+# ── Fallback seed keywords ────────────────────────────────────────────────────
+# Used ONLY when the Google Ads API is not yet configured.
+# monthly_volume = 0 intentionally — the collector's keyword_volume_fetcher
+# will replace these with real Google data on the first scan after you
+# configure google-ads.yaml.
+#
+# To add your own market/city, replace the terms below with queries relevant
+# to the client's competitive set.
+_FALLBACK_KEYWORDS = [
+    # Generic hotel queries — market-level
+    "hotels in new york city",
+    "new york hotels",
+    "best hotels in nyc",
+    "hotels near times square",
+    "manhattan hotels",
+    "nyc hotel",
+    "hotels in manhattan",
+    "new york city hotels",
+    "hotel in new york",
+    "hotels nyc",
+    # Location
+    "hotels near central park nyc",
+    "hotels near rockefeller center",
+    "hotels near penn station nyc",
+    "hotels near grand central station",
+    "midtown manhattan hotels",
+    "upper east side hotels nyc",
+    "upper west side hotels nyc",
+    "downtown manhattan hotels",
+    "hotels near jfk airport",
+    "hotels near laguardia airport",
+    # Segment / class
+    "luxury hotels new york",
+    "5 star hotels nyc",
+    "cheap hotels nyc",
+    "budget hotels new york city",
+    "boutique hotels new york",
+    "family hotels new york city",
+    # Transactional
+    "hotel deals new york",
+    "last minute hotels nyc",
+    "hotel rooms new york",
+    "book hotel new york",
+    # Amenity long-tail
+    "hotels with pool new york city",
+    "hotels with rooftop bar nyc",
+    "hotels with parking nyc",
+    # Branded — Marriott portfolio
+    "marriott new york",
+    "marriott hotels nyc",
+    "marriott times square",
+    "marriott marquis nyc",
+    "sheraton new york times square",
+    "westin new york grand central",
+    "w hotel new york",
+    "courtyard marriott nyc",
+    "marriott bonvoy new york hotels",
+    # Branded — Hilton portfolio
+    "hilton new york",
+    "hilton hotels new york city",
+    "waldorf astoria new york",
+    "hampton inn new york city",
+    "doubletree new york",
+    # Branded — Hyatt portfolio
+    "hyatt new york",
+    "park hyatt new york",
+    "grand hyatt nyc",
+    "hyatt regency new york",
+    # Branded — IHG portfolio
+    "holiday inn new york",
+    "intercontinental new york",
+    "crowne plaza times square",
+    "kimpton new york",
+    # Comparison
+    "marriott vs hilton new york",
+    "hilton vs hyatt new york",
+]
+
+
+def _discover_or_fallback(domains: list[dict]) -> dict[str, int]:
+    """
+    Try to discover keywords for every domain via Google Ads URL seed.
+    Returns { keyword: monthly_volume }.
+
+    If the API is not configured, returns the fallback seed list with volume=0.
+    Duplicate keywords across domains are de-duplicated (highest volume wins).
+    """
+    try:
+        from collector.modules.keyword_volume_fetcher import (
+            discover_keywords_for_domain,
+            _is_configured,
+        )
+    except ImportError:
+        logger.warning("keyword_volume_fetcher not importable — using fallback list.")
+        return {kw: 0 for kw in _FALLBACK_KEYWORDS}
+
+    if not _is_configured():
+        logger.info(
+            "Google Ads API not configured.\n"
+            "  → Using %d fallback seed keywords (monthly_volume = 0).\n"
+            "  → Configure google-ads.yaml and re-run setup_schema.py to get\n"
+            "    live keyword ideas and real search volumes from Google.",
+            len(_FALLBACK_KEYWORDS),
+        )
+        return {kw: 0 for kw in _FALLBACK_KEYWORDS}
+
+    combined: dict[str, int] = {}
+    for d in domains:
+        logger.info("Discovering keywords for %s via Google Ads …", d["domain_name"])
+        ideas = discover_keywords_for_domain(d["domain_name"])
+        for kw, vol in ideas.items():
+            # Keep the highest observed volume when the same keyword appears
+            # for multiple domains (they share generic market queries).
+            if kw not in combined or vol > combined[kw]:
+                combined[kw] = vol
+
+    if not combined:
+        logger.warning("Google Ads returned no ideas — falling back to seed list.")
+        return {kw: 0 for kw in _FALLBACK_KEYWORDS}
+
+    logger.info("Google Ads discovery complete: %d unique keywords found.", len(combined))
+    return combined
+
 
 def main():
-    print(f"\n{'='*52}")
+    print(f"\n{'='*56}")
     print("Competitor Intelligence Tracker — Local Setup")
-    print(f"{'='*52}")
+    print(f"{'='*56}")
     print(f"Database: {DB_PATH}\n")
 
-    # Create tables
     init_db()
     print("✓ Tables initialised")
 
-    with get_conn() as conn:
-        # Seed keywords
-        existing_kws = {r[0] for r in conn.execute(
-            "SELECT keyword FROM keyword_volumes"
-        ).fetchall()}
-        to_insert = [k for k in SAMPLE_KEYWORDS if k["keyword"] not in existing_kws]
-        for kw in to_insert:
-            conn.execute(
-                """INSERT INTO keyword_volumes (id, keyword, monthly_volume, competition)
-                   VALUES (?, ?, ?, ?)""",
-                (str(uuid.uuid4()), kw["keyword"], kw["monthly_volume"], kw["competition"]),
-            )
-        print(f"✓ Keywords: {len(existing_kws)} already present, {len(to_insert)} inserted")
+    # ── Keyword discovery ────────────────────────────────────────────────────
+    print("\nStep 1/2 — Keyword discovery")
+    keywords = _discover_or_fallback(DOMAINS)
 
-        # Seed domains
-        existing_domains = {r[0] for r in conn.execute(
-            "SELECT domain_name FROM domains"
-        ).fetchall()}
-        inserted = 0
-        for d in SAMPLE_DOMAINS:
+    with get_conn() as conn:
+        existing_kws = {
+            r[0].lower()
+            for r in conn.execute("SELECT keyword FROM keyword_volumes").fetchall()
+        }
+        inserted_kws = 0
+        updated_kws = 0
+        for kw, vol in keywords.items():
+            if kw.lower() in existing_kws:
+                if vol > 0:
+                    conn.execute(
+                        "UPDATE keyword_volumes SET monthly_volume = ? WHERE LOWER(keyword) = LOWER(?)",
+                        (vol, kw),
+                    )
+                    updated_kws += 1
+            else:
+                conn.execute(
+                    """INSERT INTO keyword_volumes (id, keyword, monthly_volume, competition)
+                       VALUES (?, ?, ?, ?)""",
+                    (str(uuid.uuid4()), kw, vol, _infer_competition(vol)),
+                )
+                inserted_kws += 1
+
+    vol_note = "with real Google volumes" if any(v > 0 for v in keywords.values()) else "with volume=0 (API not configured)"
+    print(
+        f"  {len(existing_kws)} already present | "
+        f"{inserted_kws} inserted | {updated_kws} updated — {vol_note}"
+    )
+
+    # ── Domain seeding ───────────────────────────────────────────────────────
+    print("\nStep 2/2 — Domain seeding")
+    with get_conn() as conn:
+        existing_domains = {
+            r[0] for r in conn.execute("SELECT domain_name FROM domains").fetchall()
+        }
+        inserted_domains = 0
+        for d in DOMAINS:
             if d["domain_name"] not in existing_domains:
                 conn.execute(
-                    """INSERT INTO domains (id, domain_name, display_name)
-                       VALUES (?, ?, ?)""",
+                    "INSERT INTO domains (id, domain_name, display_name) VALUES (?, ?, ?)",
                     (str(uuid.uuid4()), d["domain_name"], d["display_name"]),
                 )
-                inserted += 1
-        print(f"✓ Domains:  {len(existing_domains)} already present, {inserted} inserted")
+                inserted_domains += 1
+    print(
+        f"  {len(existing_domains)} already present | {inserted_domains} inserted"
+    )
 
-    print("\n✅ Setup complete. Next steps:")
-    print("   1. Run seed:     python3.10 seed_test_data.py")
-    print("   2. Start API:    python3.10 -m uvicorn api.main:app --port 8000")
-    print("   3. Start UI:     cd frontend && npm run dev\n")
+    print(f"\n{'='*56}")
+    print("✅ Setup complete. Next steps:")
+    if any(v == 0 for v in keywords.values()):
+        print("   → Configure google-ads.yaml then re-run setup_schema.py")
+        print("     to replace placeholder volumes with real Google data.")
+    print("   1. Start API:  uvicorn api.main:app --reload --port 8000")
+    print("   2. Start UI:   cd frontend && npm run dev")
+    print(f"{'='*56}\n")
+
+
+def _infer_competition(monthly_volume: int) -> str:
+    """Infer competition tier from volume when the API doesn't provide it."""
+    if monthly_volume == 0:
+        return "UNKNOWN"
+    if monthly_volume >= 10000:
+        return "HIGH"
+    if monthly_volume >= 3000:
+        return "MEDIUM"
+    return "LOW"
 
 
 if __name__ == "__main__":

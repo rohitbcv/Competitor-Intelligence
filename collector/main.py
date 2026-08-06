@@ -20,7 +20,6 @@ from collector.modules.traffic_estimator import estimate_traffic
 from collector.modules.brand_interest import get_brand_interest
 from collector.modules.dom_monitor import check_dom_changes
 from collector.modules.keyword_volume_fetcher import refresh_volumes_in_db
-from collector.modules.keyword_discoverer import discover_keywords
 
 logging.basicConfig(
     level=logging.INFO,
@@ -124,34 +123,18 @@ def scan_domain(domain_row: dict, keywords: list[str], keyword_volumes: dict[str
         traffic_data = estimate_traffic(domain, serp_results, keyword_volumes)
         scan_results["traffic"] = traffic_data
 
-        # Only persist estimates when we have at least some real SERP ranks,
-        # OR when this domain has no prior data at all (fresh domain — save
-        # unranked keywords so they appear in the UI Unranked tab).
+        # Only persist estimates when we have at least some real SERP ranks.
+        # Saving all-zero rows when SERP is blocked would overwrite good historical data.
         ranked_count = sum(
             1 for item in traffic_data["keyword_breakdown"]
             if item.get("serp_rank") is not None
         )
-
-        # Check if any prior traffic estimates exist for this domain
-        from db.sqlite import get_conn as _get_conn
-        with _get_conn() as _conn:
-            prior_count = _conn.execute(
-                "SELECT COUNT(*) FROM traffic_estimates WHERE domain_id=?",
-                (domain_id,)
-            ).fetchone()[0]
-
-        if ranked_count == 0 and prior_count > 0:
+        if ranked_count == 0:
             logger.warning(
                 "[D] Skipping traffic estimate save for %s — SERP returned 0 ranked keywords "
-                "(IP likely blocked). Existing %d estimates preserved.", domain, prior_count
+                "(IP likely blocked). Existing estimates preserved.", domain
             )
         else:
-            if ranked_count == 0:
-                logger.warning(
-                    "[D] SERP returned 0 ranked keywords for %s (IP likely blocked). "
-                    "Saving %d keywords as unranked — they will appear in the Unranked tab.",
-                    domain, len(traffic_data["keyword_breakdown"])
-                )
             for item in traffic_data["keyword_breakdown"]:
                 db.upsert_traffic_estimate(
                     domain_id=domain_id,
@@ -209,41 +192,6 @@ def scan_domain(domain_row: dict, keywords: list[str], keyword_volumes: dict[str
     return scan_results
 
 
-def _ensure_domain_keywords(domain_row: dict) -> dict[str, int]:
-    """
-    Return keyword → volume mapping for this domain.
-
-    If the domain has no discovered keywords yet, run keyword_discoverer
-    to build a domain-specific keyword set automatically.
-    Falls back to the global keyword_volumes pool if discovery also fails.
-    """
-    domain_id   = domain_row["id"]
-    domain_name = domain_row["domain_name"]
-
-    # Check for existing domain-specific keywords
-    existing = db.get_domain_keywords(domain_id)
-    if existing:
-        logger.info("[KD] %s — using %d existing domain keywords.", domain_name, len(existing))
-        return existing
-
-    # No keywords yet → discover them now
-    logger.info("[KD] %s — no domain keywords found. Running discovery…", domain_name)
-    try:
-        discovered = discover_keywords(domain_name)
-        if discovered:
-            n = db.upsert_domain_keywords(domain_id, discovered)
-            logger.info("[KD] %s — saved %d new keywords to domain_keyword_map.", domain_name, n)
-            return discovered
-        else:
-            logger.warning("[KD] %s — discovery returned 0 keywords. Falling back to global pool.",
-                           domain_name)
-    except Exception as exc:
-        logger.error("[KD] %s — discovery failed (%s). Falling back to global pool.", domain_name, exc)
-
-    # Final fallback: global keyword pool
-    return db.get_keyword_volumes()
-
-
 def main():
     logger.info("=== Competitor Intelligence Tracker — Scan Started ===")
     logger.info("Timestamp: %s", datetime.now(timezone.utc).isoformat())
@@ -253,16 +201,7 @@ def main():
         logger.warning("No active domains found. Exiting.")
         return
 
-    # Optional filter: SCAN_DOMAINS=marriott.com,hilton.com,hyatt.com
-    # Set as a GitHub Actions variable (repo Settings → Variables) or env var.
-    scan_filter = os.getenv("SCAN_DOMAINS", "").strip()
-    if scan_filter:
-        allowed = {d.strip().lower() for d in scan_filter.split(",")}
-        domains = [d for d in domains if d["domain_name"].lower() in allowed]
-        logger.info("SCAN_DOMAINS filter active — scanning %d domains: %s",
-                    len(domains), [d["domain_name"] for d in domains])
-    else:
-        logger.info("Found %d active domains.", len(domains))
+    logger.info("Found %d active domains.", len(domains))
 
     # Refresh keyword volumes from Google Ads API if credentials are configured.
     # Silently skipped when google-ads.yaml is absent or incomplete.
@@ -272,14 +211,13 @@ def main():
     else:
         logger.info("Using stored keyword volumes (Google Ads API not configured).")
 
+    keyword_volumes = db.get_keyword_volumes()
+    keywords = list(keyword_volumes.keys())
+    logger.info("Loaded %d keywords from keyword_volumes table.", len(keywords))
+
     all_results = []
     for domain_row in domains:
         try:
-            # Get or discover domain-specific keywords
-            keyword_volumes = _ensure_domain_keywords(domain_row)
-            keywords = list(keyword_volumes.keys())
-            logger.info("Scanning %s with %d keywords.", domain_row["domain_name"], len(keywords))
-
             result = scan_domain(domain_row, keywords, keyword_volumes)
             all_results.append(result)
         except Exception as exc:

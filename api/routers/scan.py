@@ -32,7 +32,7 @@ def _get_done(domain_id: str, current_module: str) -> list[str]:
 
 def _run_scan_background(domain_id: str, domain_name: str):
     from collector.db import client as db
-    from collector.main import scan_domain, _ensure_domain_keywords
+    from collector.main import scan_domain
 
     _update_status(domain_id, status="running", current_module="loading", modules_done=[])
 
@@ -46,11 +46,8 @@ def _run_scan_background(domain_id: str, domain_name: str):
             _update_status(domain_id, status="error", error="Domain not found")
             return
 
-        # Use domain-specific keywords (auto-discovers if none exist yet)
-        _update_status(domain_id, current_module="keyword_discovery")
-        keyword_volumes = _ensure_domain_keywords(domain_row)
+        keyword_volumes = db.get_keyword_volumes()
         keywords = list(keyword_volumes.keys())
-        logger.info("Scan for %s: %d keywords loaded.", domain_name, len(keywords))
 
         _update_status(domain_id, current_module="sitemap")
         scan_domain(
