@@ -240,24 +240,75 @@ DOMAINS_INFO = {
 }
 
 
+def _seed_snapshot(conn, domain_name: str, domain_id: str,
+                   ranks: dict, volumes: dict,
+                   timestamp: str, prev_multipliers: dict | None = None) -> tuple[int, int]:
+    """
+    Insert one full snapshot of keyword_rankings + traffic_estimates for a domain.
+
+    prev_multipliers: optional {keyword: float} — if provided, multiplies the
+    computed visits by that factor to simulate last week's slightly lower traffic.
+    Ranks stay the same so CTR curves don't swing wildly.
+
+    Returns (ranked_count, total_visits).
+    """
+    total_visits = 0
+    ranked = 0
+    for keyword, domain_ranks in ranks.items():
+        rank = domain_ranks.get(domain_name)
+        vol = volumes.get(keyword, 0)
+        c = ctr(rank, keyword, domain_name)
+        long_tail = 0.80 if vol < 200 else 1.0
+        visits = int(vol * c * long_tail)
+        if prev_multipliers and keyword in prev_multipliers:
+            visits = int(visits * prev_multipliers[keyword])
+        total_visits += visits
+        if rank:
+            ranked += 1
+
+        conn.execute(
+            "INSERT INTO keyword_rankings (id,domain_id,keyword,rank_position) VALUES (?,?,?,?)",
+            (str(uuid.uuid4()), domain_id, keyword, rank),
+        )
+        conn.execute(
+            """INSERT INTO traffic_estimates
+               (id,domain_id,keyword,monthly_search_volume,serp_rank,
+                estimated_ctr,estimated_monthly_visits,estimated_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), domain_id, keyword, vol, rank, c, visits, timestamp),
+        )
+    return ranked, total_visits
+
+
 def main():
     init_db()
 
     ranks = _build_ranks()
 
+    import random
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    ts_current  = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts_previous = (now - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Per-keyword multiplier for the previous week: 0.85–0.92 of current visits.
+    # This simulates realistic +8–18% weekly traffic growth without rank changes,
+    # avoiding the extreme CTR swings that occur when rank shifts by just 1 position.
+    ranks_for_mult = _build_ranks()
+    all_keywords = list(ranks_for_mult.keys())
+    random.seed(42)   # fixed seed → reproducible deltas
+    prev_multipliers = {kw: round(random.uniform(0.85, 0.92), 4) for kw in all_keywords}
+
     with get_conn() as conn:
-        # Fetch volumes for CTR calc
         volumes = {r[0]: r[1] for r in conn.execute(
             "SELECT keyword, monthly_volume FROM keyword_volumes"
         ).fetchall()}
-
-        # Fetch domain IDs
         domain_rows = {r[0]: r[1] for r in conn.execute(
             "SELECT domain_name, id FROM domains WHERE is_active=1"
         ).fetchall()}
 
     print(f"\n{'='*56}")
-    print(f"Seeding {len(ranks)} keywords × {len(domain_rows)} domains")
+    print(f"Seeding {len(ranks)} keywords × {len(domain_rows)} domains (2 snapshots)")
     print(f"{'='*56}")
 
     totals = {}
@@ -267,9 +318,9 @@ def main():
             if not info:
                 continue
 
-            # Clear old SERP/traffic/sitemap/DOM data (tech_profiles left to live scans)
-            for table in ["traffic_estimates","keyword_rankings",
-                           "sitemap_metrics","site_changes"]:
+            # Clear old data
+            for table in ["traffic_estimates", "keyword_rankings",
+                           "sitemap_metrics", "site_changes"]:
                 conn.execute(f"DELETE FROM {table} WHERE domain_id=?", (domain_id,))
 
             # Sitemap
@@ -285,39 +336,23 @@ def main():
                  hashlib.md5(f"{domain_name}-2026-07".encode()).hexdigest(), 0),
             )
 
-            # SERP + traffic
-            total_visits = 0
-            ranked = 0
-            for keyword, domain_ranks in ranks.items():
-                rank = domain_ranks.get(domain_name)
-                vol = volumes.get(keyword, 0)
-                c = ctr(rank, keyword, domain_name)
-                multiplier = 0.80 if vol < 200 else 1.0
-                visits = int(vol * c * multiplier)
-                total_visits += visits
-                if rank:
-                    ranked += 1
+            # Previous week snapshot — same ranks, 85–92% of current visits
+            _seed_snapshot(conn, domain_name, domain_id, ranks, volumes,
+                           timestamp=ts_previous, prev_multipliers=prev_multipliers)
 
-                conn.execute(
-                    "INSERT INTO keyword_rankings (id,domain_id,keyword,rank_position) VALUES (?,?,?,?)",
-                    (str(uuid.uuid4()), domain_id, keyword, rank),
-                )
-                conn.execute(
-                    """INSERT INTO traffic_estimates
-                       (id,domain_id,keyword,monthly_search_volume,serp_rank,
-                        estimated_ctr,estimated_monthly_visits)
-                       VALUES (?,?,?,?,?,?,?)""",
-                    (str(uuid.uuid4()), domain_id, keyword, vol, rank, c, visits),
-                )
+            # Current week snapshot — full visits
+            ranked, total_visits = _seed_snapshot(conn, domain_name, domain_id,
+                                                   ranks, volumes,
+                                                   timestamp=ts_current)
 
             totals[domain_name] = total_visits
             print(f"\n  {info['display']}  ({domain_name})")
-            print(f"    ✓ Sitemap: {info['pages']:,} pages")
-            print(f"    ✓ SERP:    {ranked}/{len(ranks)} keywords ranked")
-            print(f"    ✓ Traffic: ~{total_visits:,} visits/month (est.)")
+            print(f"    ✓ Sitemap:   {info['pages']:,} pages")
+            print(f"    ✓ SERP:      {ranked}/{len(ranks)} keywords ranked (current week)")
+            print(f"    ✓ Traffic:   ~{total_visits:,} visits/month (est., current week)")
 
     print(f"\n{'='*56}")
-    print("Estimated monthly organic visits")
+    print("Estimated monthly organic visits (current week)")
     print(f"{'='*56}")
     for dn, t in totals.items():
         print(f"  {DOMAINS_INFO[dn]['display']:24s}  ~{t:>8,} visits/month")

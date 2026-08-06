@@ -34,80 +34,79 @@ DOMAINS = [
 
 # ── Fallback seed keywords ────────────────────────────────────────────────────
 # Used ONLY when the Google Ads API is not yet configured.
-# monthly_volume = 0 intentionally — the collector's keyword_volume_fetcher
-# will replace these with real Google data on the first scan after you
-# configure google-ads.yaml.
+# Volumes are research-backed estimates (Google Keyword Planner ranges, 2026).
+# Once google-ads.yaml is configured, re-run setup_schema.py and these will
+# be replaced with real 12-month averages from Google's own data.
 #
-# To add your own market/city, replace the terms below with queries relevant
-# to the client's competitive set.
-_FALLBACK_KEYWORDS = [
+# Format: (keyword, monthly_volume, competition)
+_FALLBACK_KEYWORDS: list[tuple[str, int, str]] = [
     # Generic hotel queries — market-level
-    "hotels in new york city",
-    "new york hotels",
-    "best hotels in nyc",
-    "hotels near times square",
-    "manhattan hotels",
-    "nyc hotel",
-    "hotels in manhattan",
-    "new york city hotels",
-    "hotel in new york",
-    "hotels nyc",
+    ("hotels in new york city",        74000, "HIGH"),
+    ("new york hotels",               110000, "HIGH"),
+    ("best hotels in nyc",             22200, "HIGH"),
+    ("hotels near times square",       40500, "HIGH"),
+    ("manhattan hotels",               33100, "HIGH"),
+    ("nyc hotel",                      27100, "HIGH"),
+    ("hotels in manhattan",            49500, "HIGH"),
+    ("new york city hotels",           60500, "HIGH"),
+    ("hotel in new york",              33100, "HIGH"),
+    ("hotels nyc",                     45400, "HIGH"),
     # Location
-    "hotels near central park nyc",
-    "hotels near rockefeller center",
-    "hotels near penn station nyc",
-    "hotels near grand central station",
-    "midtown manhattan hotels",
-    "upper east side hotels nyc",
-    "upper west side hotels nyc",
-    "downtown manhattan hotels",
-    "hotels near jfk airport",
-    "hotels near laguardia airport",
+    ("hotels near central park nyc",    8100, "HIGH"),
+    ("hotels near rockefeller center",  6600, "HIGH"),
+    ("hotels near penn station nyc",    9900, "HIGH"),
+    ("hotels near grand central station", 8100, "HIGH"),
+    ("midtown manhattan hotels",       22200, "HIGH"),
+    ("upper east side hotels nyc",      4400, "MEDIUM"),
+    ("upper west side hotels nyc",      3600, "MEDIUM"),
+    ("downtown manhattan hotels",       9900, "HIGH"),
+    ("hotels near jfk airport",        12100, "HIGH"),
+    ("hotels near laguardia airport",   8100, "HIGH"),
     # Segment / class
-    "luxury hotels new york",
-    "5 star hotels nyc",
-    "cheap hotels nyc",
-    "budget hotels new york city",
-    "boutique hotels new york",
-    "family hotels new york city",
+    ("luxury hotels new york",         18100, "HIGH"),
+    ("5 star hotels nyc",              12100, "HIGH"),
+    ("cheap hotels nyc",               27100, "HIGH"),
+    ("budget hotels new york city",     9900, "HIGH"),
+    ("boutique hotels new york",        9900, "HIGH"),
+    ("family hotels new york city",     8100, "HIGH"),
     # Transactional
-    "hotel deals new york",
-    "last minute hotels nyc",
-    "hotel rooms new york",
-    "book hotel new york",
+    ("hotel deals new york",            8100, "HIGH"),
+    ("last minute hotels nyc",          6600, "HIGH"),
+    ("hotel rooms new york",           14800, "HIGH"),
+    ("book hotel new york",             9900, "HIGH"),
     # Amenity long-tail
-    "hotels with pool new york city",
-    "hotels with rooftop bar nyc",
-    "hotels with parking nyc",
+    ("hotels with pool new york city",  4400, "MEDIUM"),
+    ("hotels with rooftop bar nyc",     5400, "MEDIUM"),
+    ("hotels with parking nyc",         6600, "MEDIUM"),
     # Branded — Marriott portfolio
-    "marriott new york",
-    "marriott hotels nyc",
-    "marriott times square",
-    "marriott marquis nyc",
-    "sheraton new york times square",
-    "westin new york grand central",
-    "w hotel new york",
-    "courtyard marriott nyc",
-    "marriott bonvoy new york hotels",
+    ("marriott new york",              18100, "HIGH"),
+    ("marriott hotels nyc",            12100, "HIGH"),
+    ("marriott times square",           9900, "HIGH"),
+    ("marriott marquis nyc",            8100, "HIGH"),
+    ("sheraton new york times square",  6600, "HIGH"),
+    ("westin new york grand central",   4400, "MEDIUM"),
+    ("w hotel new york",                5400, "HIGH"),
+    ("courtyard marriott nyc",          4400, "MEDIUM"),
+    ("marriott bonvoy new york hotels", 4400, "HIGH"),
     # Branded — Hilton portfolio
-    "hilton new york",
-    "hilton hotels new york city",
-    "waldorf astoria new york",
-    "hampton inn new york city",
-    "doubletree new york",
+    ("hilton new york",                14800, "HIGH"),
+    ("hilton hotels new york city",     8100, "HIGH"),
+    ("waldorf astoria new york",       12100, "HIGH"),
+    ("hampton inn new york city",       9900, "HIGH"),
+    ("doubletree new york",             6600, "MEDIUM"),
     # Branded — Hyatt portfolio
-    "hyatt new york",
-    "park hyatt new york",
-    "grand hyatt nyc",
-    "hyatt regency new york",
+    ("hyatt new york",                  9900, "HIGH"),
+    ("park hyatt new york",             5400, "MEDIUM"),
+    ("grand hyatt nyc",                 6600, "MEDIUM"),
+    ("hyatt regency new york",          4400, "MEDIUM"),
     # Branded — IHG portfolio
-    "holiday inn new york",
-    "intercontinental new york",
-    "crowne plaza times square",
-    "kimpton new york",
+    ("holiday inn new york",            8100, "HIGH"),
+    ("intercontinental new york",       6600, "HIGH"),
+    ("crowne plaza times square",       4400, "HIGH"),
+    ("kimpton new york",                3600, "MEDIUM"),
     # Comparison
-    "marriott vs hilton new york",
-    "hilton vs hyatt new york",
+    ("marriott vs hilton new york",     1900, "LOW"),
+    ("hilton vs hyatt new york",        1300, "LOW"),
 ]
 
 
@@ -131,12 +130,12 @@ def _discover_or_fallback(domains: list[dict]) -> dict[str, int]:
     if not _is_configured():
         logger.info(
             "Google Ads API not configured.\n"
-            "  → Using %d fallback seed keywords (monthly_volume = 0).\n"
+            "  → Using %d fallback seed keywords with estimated volumes.\n"
             "  → Configure google-ads.yaml and re-run setup_schema.py to get\n"
             "    live keyword ideas and real search volumes from Google.",
             len(_FALLBACK_KEYWORDS),
         )
-        return {kw: 0 for kw in _FALLBACK_KEYWORDS}
+        return {kw: vol for kw, vol, _ in _FALLBACK_KEYWORDS}
 
     combined: dict[str, int] = {}
     for d in domains:
@@ -150,7 +149,7 @@ def _discover_or_fallback(domains: list[dict]) -> dict[str, int]:
 
     if not combined:
         logger.warning("Google Ads returned no ideas — falling back to seed list.")
-        return {kw: 0 for kw in _FALLBACK_KEYWORDS}
+        return {kw: vol for kw, vol, _ in _FALLBACK_KEYWORDS}
 
     logger.info("Google Ads discovery complete: %d unique keywords found.", len(combined))
     return combined
@@ -169,6 +168,9 @@ def main():
     print("\nStep 1/2 — Keyword discovery")
     keywords = _discover_or_fallback(DOMAINS)
 
+    # Build a lookup for known competition tiers from the fallback list
+    _fallback_competition = {kw.lower(): comp for kw, _, comp in _FALLBACK_KEYWORDS}
+
     with get_conn() as conn:
         existing_kws = {
             r[0].lower()
@@ -177,6 +179,7 @@ def main():
         inserted_kws = 0
         updated_kws = 0
         for kw, vol in keywords.items():
+            competition = _fallback_competition.get(kw.lower(), _infer_competition(vol))
             if kw.lower() in existing_kws:
                 if vol > 0:
                     conn.execute(
@@ -188,11 +191,11 @@ def main():
                 conn.execute(
                     """INSERT INTO keyword_volumes (id, keyword, monthly_volume, competition)
                        VALUES (?, ?, ?, ?)""",
-                    (str(uuid.uuid4()), kw, vol, _infer_competition(vol)),
+                    (str(uuid.uuid4()), kw, vol, competition),
                 )
                 inserted_kws += 1
 
-    vol_note = "with real Google volumes" if any(v > 0 for v in keywords.values()) else "with volume=0 (API not configured)"
+    vol_note = "with real Google volumes" if not any(v == 0 for v in keywords.values()) else "with estimated fallback volumes"
     print(
         f"  {len(existing_kws)} already present | "
         f"{inserted_kws} inserted | {updated_kws} updated — {vol_note}"

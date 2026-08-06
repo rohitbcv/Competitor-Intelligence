@@ -20,6 +20,7 @@ from collector.modules.traffic_estimator import estimate_traffic
 from collector.modules.brand_interest import get_brand_interest
 from collector.modules.dom_monitor import check_dom_changes
 from collector.modules.keyword_volume_fetcher import refresh_volumes_in_db
+from collector.modules.volume_refiner import refine_and_save
 
 logging.basicConfig(
     level=logging.INFO,
@@ -210,6 +211,20 @@ def main():
         logger.info("Refreshed %d keyword volumes from Google Ads Keyword Planner.", refreshed)
     else:
         logger.info("Using stored keyword volumes (Google Ads API not configured).")
+
+    # Refine volumes within shared buckets using Google Trends relative scores.
+    # Google Ads rounds volumes to tiers (1,300 / 1,600 / ... / 6,600 / 8,100 …),
+    # causing many keywords to show identical clicks. The refiner uses pytrends to
+    # proportionally split each bucket (±7–11% accuracy preserved).
+    # Refined values are saved back to keyword_volumes so they persist across scans.
+    try:
+        refined_count = refine_and_save()
+        if refined_count:
+            logger.info("[VR] Refined %d keyword volumes using Google Trends.", refined_count)
+        else:
+            logger.info("[VR] No volume refinement needed (buckets already differentiated).")
+    except Exception as exc:
+        logger.warning("[VR] Volume refinement failed (%s) — continuing with raw volumes.", exc)
 
     keyword_volumes = db.get_keyword_volumes()
     keywords = list(keyword_volumes.keys())
