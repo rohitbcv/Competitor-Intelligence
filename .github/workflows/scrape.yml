@@ -44,8 +44,14 @@ jobs:
         run: |
           git config user.name  "GitHub Actions"
           git config user.email "actions@github.com"
+          # Save the updated DB before wiping the working tree
+          cp data/tracker.db /tmp/tracker.db
+          # Hard-reset to remote so working tree is perfectly clean
+          git fetch origin main
+          git reset --hard FETCH_HEAD
+          # Restore the fresh scan results
+          cp /tmp/tracker.db data/tracker.db
           git add data/tracker.db
           git diff --cached --quiet && echo "No DB changes to commit" || \
             git commit -m "chore: update scan results $(date -u +'%Y-%m-%d %H:%M UTC')"
-          git pull --rebase origin main
           git push origin main
