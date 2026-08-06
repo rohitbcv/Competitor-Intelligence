@@ -253,7 +253,16 @@ def main():
         logger.warning("No active domains found. Exiting.")
         return
 
-    logger.info("Found %d active domains.", len(domains))
+    # Optional filter: SCAN_DOMAINS=marriott.com,hilton.com,hyatt.com
+    # Set as a GitHub Actions variable (repo Settings → Variables) or env var.
+    scan_filter = os.getenv("SCAN_DOMAINS", "").strip()
+    if scan_filter:
+        allowed = {d.strip().lower() for d in scan_filter.split(",")}
+        domains = [d for d in domains if d["domain_name"].lower() in allowed]
+        logger.info("SCAN_DOMAINS filter active — scanning %d domains: %s",
+                    len(domains), [d["domain_name"] for d in domains])
+    else:
+        logger.info("Found %d active domains.", len(domains))
 
     # Refresh keyword volumes from Google Ads API if credentials are configured.
     # Silently skipped when google-ads.yaml is absent or incomplete.
